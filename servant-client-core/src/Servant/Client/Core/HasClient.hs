@@ -64,7 +64,6 @@ import           Servant.API
                  NoContentVerb,
                  ReflectMethod (..),
                  StreamBody',
-                 Verb,
                  getResponse, AuthProtect, BasicAuth, BasicAuthData, Capture', CaptureAll, DeepQuery, Description, Fragment, FramingRender (..), FramingUnrender (..), Header', Headers (..), HttpVersion, MimeRender (mimeRender), NoContent (NoContent), QueryFlag, QueryParam', QueryParams, QueryString, Raw, RawM, RemoteHost, ReqBody', SBoolI, Stream, Summary, ToHttpApiData, ToSourceIO (..), Vault, WithNamedContext, WithResource, WithStatus (..), contentType, getHeadersHList, toEncodedUrlPiece, NamedRoutes)
 import           Servant.API.Generic
                  (GenericMode(..), ToServant, ToServantApi
@@ -80,6 +79,7 @@ import           Servant.API.Modifiers
 import           Servant.API.TypeErrors
 import           Servant.API.UVerb
                  (HasStatus, HasStatuses (Statuses, statuses), UVerb, Union, Unique, inject, statusOf, foldMapUnion, matchUnion)
+import           Servant.API.MultiVerb ( MultiVerb, AsUnion, UnrenderResult(..), fromUnion)
 
 import           Servant.Client.Core.Auth
 import           Servant.Client.Core.BasicAuth
@@ -87,6 +87,7 @@ import           Servant.Client.Core.ClientError
 import           Servant.Client.Core.Request
 import           Servant.Client.Core.Response
 import           Servant.Client.Core.RunClient
+import qualified Data.Text as Text
 
 -- * Accessing APIs as a Client
 
@@ -240,8 +241,8 @@ instance {-# OVERLAPPABLE #-}
   -- Note [Non-Empty Content Types]
   ( RunClient m, MimeUnrender ct a, ReflectMethod method, cts' ~ (ct ': cts)
   , KnownNat status
-  ) => HasClient m (Verb method status cts' a) where
-  type Client m (Verb method status cts' a) = m a
+  ) => HasClient m (MultiVerb method status cts' a) where
+  type Client m (MultiVerb method status cts' a) = m a
   clientWithRoute _pm Proxy req = do
     response <- runRequestAcceptStatus (Just [status]) req
       { requestAccept = fromList $ toList accept
@@ -257,8 +258,8 @@ instance {-# OVERLAPPABLE #-}
 
 instance {-# OVERLAPPING #-}
   ( RunClient m, ReflectMethod method, KnownNat status
-  ) => HasClient m (Verb method status cts NoContent) where
-  type Client m (Verb method status cts NoContent)
+  ) => HasClient m (MultiVerb method status cts NoContent) where
+  type Client m (MultiVerb method status cts NoContent)
     = m NoContent
   clientWithRoute _pm Proxy req = do
     _response <- runRequestAcceptStatus (Just [status]) req { requestMethod = method }
@@ -283,8 +284,8 @@ instance {-# OVERLAPPING #-}
   -- Note [Non-Empty Content Types]
   ( RunClient m, MimeUnrender ct a, BuildHeadersTo ls, KnownNat status
   , ReflectMethod method, cts' ~ (ct ': cts)
-  ) => HasClient m (Verb method status cts' (Headers ls a)) where
-  type Client m (Verb method status cts' (Headers ls a))
+  ) => HasClient m (MultiVerb method status cts' (Headers ls a)) where
+  type Client m (MultiVerb method status cts' (Headers ls a))
     = m (Headers ls a)
   clientWithRoute _pm Proxy req = do
     response <- runRequestAcceptStatus (Just [status]) req
@@ -304,8 +305,8 @@ instance {-# OVERLAPPING #-}
 
 instance {-# OVERLAPPING #-}
   ( RunClient m, BuildHeadersTo ls, ReflectMethod method, KnownNat status
-  ) => HasClient m (Verb method status cts (Headers ls NoContent)) where
-  type Client m (Verb method status cts (Headers ls NoContent))
+  ) => HasClient m (MultiVerb method status cts (Headers ls NoContent)) where
+  type Client m (MultiVerb method status cts (Headers ls NoContent))
     = m (Headers ls NoContent)
   clientWithRoute _pm Proxy req = do
     response <- runRequestAcceptStatus (Just [status]) req { requestMethod = method }
@@ -581,7 +582,7 @@ instance (KnownSymbol sym, ToHttpApiData a, HasClient m api, SBoolI (FoldRequire
 --
 -- Example:
 --
--- > type MyApi = "books" :> QueryParams "authors" Text :> Get '[JSON] [Book]
+-- > type M yApi = "books" :> QueryParams "authors" Text :> Get '[JSON] [Book]
 -- >
 -- > myApi :: Proxy MyApi
 -- > myApi = Proxy
@@ -901,6 +902,46 @@ instance
         fromServant @api @(AsClientT mb) $
         hoistClientMonad @m @(ToServantApi api) @ma @mb Proxy Proxy nat $
         toServant @api @(AsClientT ma) clientA
+
+-- FUTUREWORK: add tests for client support
+instance
+  ( AllMime cs,
+    ReflectMethod method,
+    AsUnion as r,
+    RunClient m
+  ) =>
+  HasClient m (MultiVerb method cs as r)
+  where
+  type Client m (MultiVerb method cs as r) = m r
+
+  clientWithRoute _ _ req = do
+    response <-
+      runRequestAcceptStatus
+        (Just (responseListStatuses @cs @as))
+        req
+          { requestMethod = method,
+            requestAccept = Seq.fromList accept
+          }
+
+    c <- getResponseContentType response
+    unless (any (M.matches c) accept) $ do
+      throwClientError $ UnsupportedContentType c response
+
+    -- FUTUREWORK: support streaming
+    let sresp =
+          if BL.null (responseBody response)
+            then SomeResponse response {responseBody = ()}
+            else SomeResponse response
+    case responseListUnrender @cs @as c sresp of
+      StatusMismatch -> throwClientError (DecodeFailure "Status mismatch" response)
+      UnrenderError e -> throwClientError (DecodeFailure (Text.pack e) response)
+      UnrenderSuccess x -> pure (fromUnion @as x)
+    where
+      accept = allMime (Proxy @cs)
+      method = reflectMethod (Proxy @method)
+
+  hoistClientMonad _ _ f = f
+
 
 infixl 1 //
 infixl 2 /:

@@ -56,7 +56,7 @@ import           Servant.API
                  Header', If, IsSecure (..), NoContentVerb, QueryFlag,
                  QueryParam', QueryParams, QueryString, Raw, RawM, ReflectMethod (reflectMethod),
                  RemoteHost, ReqBody', SBool (..), SBoolI (..), SourceIO,
-                 Stream, StreamBody', Summary, ToSourceIO (..), Vault, Verb,
+                 Stream, StreamBody', Summary, ToSourceIO (..), Vault,
                  WithNamedContext, WithResource, NamedRoutes)
 import           Servant.API.Generic (GenericMode(..), ToServant, ToServantApi, GServantProduct, toServant, fromServant)
 import           Servant.API.ContentTypes
@@ -89,6 +89,7 @@ import           Servant.Server.Internal.RoutingApplication
 import           Servant.Server.Internal.ServerError
 
 import           Servant.API.TypeLevel (AtMostOneFragment, FragmentUnique)
+import Servant.API.MultiVerb (MultiVerb)
 
 class HasServer api context where
   -- | The type of a server for this API, given a monad to run effects in.
@@ -315,9 +316,9 @@ noContentRouter method status action = leafRouter route'
 
 instance {-# OVERLAPPABLE #-}
          ( AllCTRender ctypes a, ReflectMethod method, KnownNat status
-         ) => HasServer (Verb method status ctypes a) context where
+         ) => HasServer (MultiVerb method status ctypes a) context where
 
-  type ServerT (Verb method status ctypes a) m = m a
+  type ServerT (MultiVerb method status ctypes a) m = m a
   hoistServerWithContext _ _ nt s = nt s
 
   route Proxy _ = methodRouter ([],) method (Proxy :: Proxy ctypes) status
@@ -327,9 +328,9 @@ instance {-# OVERLAPPABLE #-}
 instance {-# OVERLAPPING #-}
          ( AllCTRender ctypes a, ReflectMethod method, KnownNat status
          , GetHeaders (Headers h a)
-         ) => HasServer (Verb method status ctypes (Headers h a)) context where
+         ) => HasServer (MultiVerb method status ctypes (Headers h a)) context where
 
-  type ServerT (Verb method status ctypes (Headers h a)) m = m (Headers h a)
+  type ServerT (MultiVerb method status ctypes (Headers h a)) m = m (Headers h a)
   hoistServerWithContext _ _ nt s = nt s
 
   route Proxy _ = methodRouter (\x -> (getHeaders x, getResponse x)) method (Proxy :: Proxy ctypes) status
